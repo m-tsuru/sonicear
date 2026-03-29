@@ -1,0 +1,8 @@
+module CMDRBridge [system] {
+    header "mdr-c/Base.h"
+    header "mdr-c/Connection.h"
+    header "mdr-c/Headphones.h"
+    header "mdr-c/HeadphonesProperties.h"
+    header "mdr-c/Platform/PlatformMacOS.h"
+    export *
+}

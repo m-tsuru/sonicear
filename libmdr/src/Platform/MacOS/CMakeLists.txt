@@ -10,4 +10,5 @@ add_library(mdr_PlatformMacOS ${SOURCES})
 find_library(IOBLUETOOTH_FRAMEWORK IOBluetooth REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 
+target_compile_options(mdr_PlatformMacOS PRIVATE "-fobjc-arc")
 target_link_libraries(mdr_PlatformMacOS PRIVATE mdr-c fmt::fmt ${IOBLUETOOTH_FRAMEWORK} ${FOUNDATION_FRAMEWORK})

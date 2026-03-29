@@ -138,42 +138,45 @@ namespace mdr
                 if (duration > kTimeout)
                     awaiter.resume_now(MDR_RESULT_ERROR_TIMEOUT);
             }
-            int taskResult;
-            try
-            {
-                if (TaskMoveNext(taskResult))
-                    return taskResult;
-            } catch (std::runtime_error& e)
-            {
-                mLastError = e.what();
-                return MDR_HEADPHONES_ERROR;
-            }
         }
         int idleCode = mTask ? MDR_HEADPHONES_INPROGRESS : MDR_HEADPHONES_IDLE;
-        if (mRecvBuf.empty())
-            return idleCode;
-        auto commandBegin = std::ranges::find(mRecvBuf, kStartMarker);
-        auto commandEnd = std::ranges::find(commandBegin, mRecvBuf.end(), kEndMarker);
-        if (commandBegin == mRecvBuf.end() || commandEnd == mRecvBuf.end())
-            return idleCode; // Incomplete
-        MDRBuffer packedCommand{commandBegin, commandEnd + 1};
-        MDRBuffer command;
-        MDRDataType type;
-        MDRCommandSeqNumber seqNum;
-        switch (MDRUnpackCommand(packedCommand, command, type, seqNum))
+        // Drain at least one complete inbound command before reporting task completion.
+        // Otherwise RequestSyncV2 can yield SYNC_OK while battery DATA is already in mRecvBuf,
+        // and callers read properties before Handle() runs.
+        if (!mRecvBuf.empty())
         {
-        case MDRUnpackResult::OK:
-            mRecvBuf.erase(mRecvBuf.begin(), commandEnd);
-            return Handle(command, type, seqNum);
-        case MDRUnpackResult::INCOMPLETE:
-            // Incomplete. Nop.
-            break;
-        case MDRUnpackResult::BAD_MARKER: [[unlikely]]
-        case MDRUnpackResult::BAD_CHECKSUM:
-            [[unlikely]]
-                // Unlikely. What we have now makes no sense yet markers are intact.
-                mRecvBuf.erase(mRecvBuf.begin(), commandEnd);
-            break;
+            auto commandBegin = std::ranges::find(mRecvBuf, kStartMarker);
+            auto commandEnd = std::ranges::find(commandBegin, mRecvBuf.end(), kEndMarker);
+            if (commandBegin != mRecvBuf.end() && commandEnd != mRecvBuf.end())
+            {
+                MDRBuffer packedCommand{commandBegin, commandEnd + 1};
+                MDRBuffer command;
+                MDRDataType type;
+                MDRCommandSeqNumber seqNum;
+                switch (MDRUnpackCommand(packedCommand, command, type, seqNum))
+                {
+                case MDRUnpackResult::OK:
+                    mRecvBuf.erase(mRecvBuf.begin(), commandEnd);
+                    return Handle(command, type, seqNum);
+                case MDRUnpackResult::INCOMPLETE:
+                    break;
+                case MDRUnpackResult::BAD_MARKER: [[unlikely]]
+                case MDRUnpackResult::BAD_CHECKSUM:
+                    [[unlikely]]
+                    mRecvBuf.erase(mRecvBuf.begin(), commandEnd);
+                    break;
+                }
+            }
+        }
+        int taskResult;
+        try
+        {
+            if (TaskMoveNext(taskResult))
+                return taskResult;
+        } catch (std::runtime_error& e)
+        {
+            mLastError = e.what();
+            return MDR_HEADPHONES_ERROR;
         }
         return idleCode;
     }

@@ -19,13 +19,17 @@ please do so.
 @property (nonatomic, strong) NSMutableData *buffer;
 @property (nonatomic, assign) BOOL isConnected;
 @property (nonatomic, assign) BOOL isConnecting;
+@property (nonatomic, assign) BOOL isQueryingSDP;
 @property (nonatomic, strong) NSString *lastError;
+@property (nonatomic, strong) NSString *targetUUID;
+@property (nonatomic, strong) NSString *targetAddress;
 
 - (void)appendData:(NSData *)data;
 - (NSData *)readData:(NSUInteger)maxLength;
 - (void)connectToAddress:(NSString *)address serviceUUID:(NSString *)uuid;
 - (void)disconnect;
 - (void)sendData:(NSData *)data;
+- (void)sdpQueryComplete:(IOBluetoothDevice *)device status:(IOReturn)status;
 @end
 
 @implementation MDRBluetoothDelegate
@@ -39,6 +43,8 @@ please do so.
         _buffer = [NSMutableData data];
         _isConnected = NO;
         _isConnecting = NO;
+        _isQueryingSDP = NO;
+        _lastError = @"";
     }
     return self;
 }
@@ -56,32 +62,50 @@ please do so.
     
     NSUInteger len = MIN(maxLength, _buffer.length);
     NSData *subData = [_buffer subdataWithRange:NSMakeRange(0, len)];
-    
-    // Efficiently remove head? NSMutableData replaceBytes might be slow-ish but fine for small buffers
     [_buffer replaceBytesInRange:NSMakeRange(0, len) withBytes:NULL length:0];
     return subData;
 }
 
 - (void)connectToAddress:(NSString *)address serviceUUID:(NSString *)uuidString {
+    NSLog(@"[MDR] Connecting to %@ with UUID %@", address, uuidString);
     self.isConnecting = YES;
-    self.lastError = nil;
+    self.isQueryingSDP = YES;
+    self.lastError = @"";
+    self.targetUUID = uuidString;
+    self.targetAddress = address;
+    self.isConnected = NO;
     
-    // Address format fix: IOBluetooth expects XX-XX-XX-XX-XX-XX sometimes or XX:XX... 
-    // addressString property returns dashes. deviceWithAddressString handles both usually.
     IOBluetoothDevice *device = [IOBluetoothDevice deviceWithAddressString:address];
     if (!device) {
-        self.lastError = @"Device not found (not paired?)";
+        self.lastError = @"Device not found";
+        self.isConnecting = NO;
+        self.isQueryingSDP = NO;
+        return;
+    }
+    
+    IOReturn sdpResult = [device performSDPQuery:self];
+    if (sdpResult != kIOReturnSuccess) {
+        self.lastError = [NSString stringWithFormat:@"SDP start failed: 0x%x", sdpResult];
+        self.isConnecting = NO;
+        self.isQueryingSDP = NO;
+        return;
+    }
+}
+
+- (void)sdpQueryComplete:(IOBluetoothDevice *)device status:(IOReturn)status {
+    NSLog(@"[MDR] SDP query complete for %@ with status 0x%x", device.addressString, status);
+    self.isQueryingSDP = NO;
+    
+    if (!self.isConnecting) return;
+    
+    if (status != kIOReturnSuccess) {
+        self.lastError = [NSString stringWithFormat:@"SDP query failed: 0x%x", status];
         self.isConnecting = NO;
         return;
     }
     
-    // We need to resolve the service channel for the custom UUID.
-    // Ensure we have SDP records.
-    // This is synchronous if we assume cached, but cleaner to perform SDP query if needed.
-    // For now assuming paired device has records available.
-    
     uint8_t uuidBytes[16];
-    if (serviceUUIDtoBytes([uuidString UTF8String], uuidBytes) != 0) {
+    if (serviceUUIDtoBytes([self.targetUUID UTF8String], uuidBytes) != 0) {
         self.lastError = @"Invalid UUID string";
         self.isConnecting = NO;
         return;
@@ -91,24 +115,26 @@ please do so.
     IOBluetoothSDPServiceRecord *serviceRecord = [device getServiceRecordForUUID:uuid];
     
     if (!serviceRecord) {
-        self.lastError = @"Service not found on device (try checking Bluetooth settings/ensure paired)";
+        NSLog(@"[MDR] Service record NOT found for UUID %@", self.targetUUID);
+        self.lastError = @"MDR Service record not found";
         self.isConnecting = NO;
         return;
     }
     
     BluetoothRFCOMMChannelID channelID;
     if ([serviceRecord getRFCOMMChannelID:&channelID] != kIOReturnSuccess) {
-        self.lastError = @"Could not get RFCOMM Channel ID from service record";
+        self.lastError = @"Could not get RFCOMM Channel ID";
         self.isConnecting = NO;
         return;
     }
     
+    NSLog(@"[MDR] Opening RFCOMM channel %d", (int)channelID);
+    
     IOBluetoothRFCOMMChannel *channel = nil;
-    // Async open
     IOReturn result = [device openRFCOMMChannelAsync:&channel withChannelID:channelID delegate:self];
     
     if (result != kIOReturnSuccess) {
-        self.lastError = [NSString stringWithFormat:@"Failed to open RFCOMM channel: 0x%x", result];
+        self.lastError = [NSString stringWithFormat:@"RFCOMM open failed: 0x%x", result];
         self.isConnecting = NO;
         return;
     }
@@ -118,30 +144,32 @@ please do so.
 
 - (void)disconnect {
     if (self.rfcommChannel) {
-        // [self.rfcommChannel closeChannel]; // closeChannel is valid?
-        // documentation says closeChannel.
         [self.rfcommChannel closeChannel];
         self.rfcommChannel = nil;
     }
     self.isConnected = NO;
     self.isConnecting = NO;
+    self.isQueryingSDP = NO;
 }
 
 - (void)sendData:(NSData *)data {
     if (self.rfcommChannel && self.isConnected) {
-        // writeAsync is best effort and non-blocking
-        [self.rfcommChannel writeAsync:(void *)data.bytes length:data.length refcon:NULL];
+        IOReturn res = [self.rfcommChannel writeAsync:(void *)data.bytes length:data.length refcon:NULL];
+        if (res != kIOReturnSuccess) {
+            NSLog(@"[MDR] Write failed: 0x%x", res);
+        }
     }
 }
 
 // IOBluetoothRFCOMMChannelDelegate methods
 
 - (void)rfcommChannelOpenComplete:(IOBluetoothRFCOMMChannel *)rfcommChannel status:(IOReturn)error {
+    NSLog(@"[MDR] RFCOMM open complete with status 0x%x", error);
     if (error != kIOReturnSuccess) {
-        self.lastError = [NSString stringWithFormat:@"Connection handshake failed: 0x%x", error];
+        self.lastError = [NSString stringWithFormat:@"RFCOMM open failed: 0x%x", error];
         self.isConnecting = NO;
         self.isConnected = NO;
-        self.rfcommChannel = nil; // clear it
+        self.rfcommChannel = nil;
         return;
     }
     self.isConnected = YES;
@@ -154,12 +182,10 @@ please do so.
 }
 
 - (void)rfcommChannelClosed:(IOBluetoothRFCOMMChannel *)rfcommChannel {
+    NSLog(@"[MDR] RFCOMM channel closed");
     self.isConnected = NO;
     self.isConnecting = NO;
     self.rfcommChannel = nil;
-    if (!self.lastError) {
-        self.lastError = @"Connection closed by remote";
-    }
 }
 
 @end
@@ -185,8 +211,6 @@ struct MDRConnectionMacOS
     }
     
     ~MDRConnectionMacOS() {
-        // Delegate is autoreleased or we rely on ARC.
-        // If we want to clean up strictly:
         [delegate disconnect];
         delegate = nil;
     }
@@ -196,10 +220,8 @@ struct MDRConnectionMacOS
         @autoreleasepool {
             NSString *addrParams = [NSString stringWithUTF8String:macAddress];
             NSString *uuidParams = [NSString stringWithUTF8String:serviceUUID];
-            
             [self->delegate connectToAddress:addrParams serviceUUID:uuidParams];
-            
-            if (self->delegate.lastError && !self->delegate.isConnecting) {
+            if (self->delegate.lastError && self->delegate.lastError.length > 0 && !self->delegate.isConnecting && !self->delegate.isQueryingSDP) {
                 return MDR_RESULT_ERROR_NET;
             }
             return MDR_RESULT_INPROGRESS;
@@ -219,7 +241,6 @@ struct MDRConnectionMacOS
             if (!self->delegate.isConnected) {
                 return MDR_RESULT_ERROR_NO_CONNECTION;
             }
-            
             NSData *data = [self->delegate readData:size];
             if (data && data.length > 0) {
                 memcpy(dst, data.bytes, data.length);
@@ -246,60 +267,60 @@ struct MDRConnectionMacOS
     static int Poll(void* user, int timeout) {
         auto* self = static_cast<MDRConnectionMacOS*>(user);
         @autoreleasepool {
-            // Processing run loop events
-            // We use a small interval if timeout > 0, otherwise instant check?
-            // If timeout is 0, we should just check and return immediately?
-            // Use 0.001s minimum to allow runloop to turn if timeout > 0
-            
-            if (timeout < 0) timeout = 1000; // Cap infinite wait for now or loop?
-            
+            if (timeout < 0) timeout = 1000;
             double seconds = timeout / 1000.0;
             if (seconds <= 0) seconds = 0.0001; 
-            
             NSDate *limitDate = [NSDate dateWithTimeIntervalSinceNow:seconds];
             [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:limitDate];
-            
-            if (self->delegate.lastError && !self->delegate.isConnected && !self->delegate.isConnecting) {
-                // Determine if it was a connection error or query error
-                // For Poll(), if we are waiting for connection
+            if (self->delegate.lastError && self->delegate.lastError.length > 0 && !self->delegate.isConnected && !self->delegate.isConnecting && !self->delegate.isQueryingSDP) {
                 return MDR_RESULT_ERROR_NET;
             }
-            
             if (self->delegate.isConnected) {
                 return MDR_RESULT_OK;
             }
-            
-            if (self->delegate.isConnecting) {
-                // If timeout reached and still connecting...
-                // The caller typically calls poll in a loop until OK or Error.
-                // So returning INPROGRESS is correct if time expired but no error yet.
+            if (self->delegate.isConnecting || self->delegate.isQueryingSDP) {
                 return MDR_RESULT_INPROGRESS; 
             }
-            
             return MDR_RESULT_ERROR_NET;
         }
     }
 
     static int GetDevicesList(void* user, MDRDeviceInfo** ppList, int* pCount) {
         @autoreleasepool {
-            NSArray *devices = [IOBluetoothDevice pairedDevices];
-            if (!devices || devices.count == 0) {
+            NSArray *allDevices = [IOBluetoothDevice pairedDevices];
+            if (!allDevices || allDevices.count == 0) {
                 *pCount = 0;
                 *ppList = nullptr;
                 return MDR_RESULT_OK;
             }
-            
-            *ppList = new MDRDeviceInfo[devices.count];
-            *pCount = (int)devices.count;
-            
-            for (NSUInteger i = 0; i < devices.count; i++) {
-                IOBluetoothDevice *dev = devices[i];
+            NSMutableArray *filteredDevices = [NSMutableArray array];
+            for (IOBluetoothDevice *dev in allDevices) {
+                NSString *name = dev.name;
+                if (!name) continue;
+                BOOL isSony = [name rangeOfString:@"Sony" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                              [name rangeOfString:@"LinkBuds" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                              [name hasPrefix:@"WH-"] ||
+                              [name hasPrefix:@"WF-"] ||
+                              [name hasPrefix:@"MDR-"] ||
+                              [name hasPrefix:@"WI-"] ||
+                              [name rangeOfString:@"SONY" options:0].location != NSNotFound;
+                if (isSony) {
+                    [filteredDevices addObject:dev];
+                }
+            }
+            if (filteredDevices.count == 0) {
+                *pCount = 0;
+                *ppList = nullptr;
+                return MDR_RESULT_OK;
+            }
+            *ppList = new MDRDeviceInfo[filteredDevices.count];
+            *pCount = (int)filteredDevices.count;
+            for (NSUInteger i = 0; i < filteredDevices.count; i++) {
+                IOBluetoothDevice *dev = filteredDevices[i];
                 NSString *name = dev.name;
                 NSString *addr = [dev.addressString stringByReplacingOccurrencesOfString:@"-" withString:@":"];
-                
                 MDRDeviceInfo *info = &(*ppList)[i];
                 memset(info, 0, sizeof(MDRDeviceInfo));
-                
                 if (name) {
                     strncpy(info->szDeviceName, [name UTF8String], sizeof(info->szDeviceName) - 1);
                 }
@@ -322,12 +343,7 @@ struct MDRConnectionMacOS
     
     static const char* GetLastError(void* user) {
         auto* self = static_cast<MDRConnectionMacOS*>(user);
-        if (self->delegate.lastError) {
-             // Returning a temporary pointer is risky if ARC deallocates the string/autorelease pool drains?
-             // But UTF8String returns inner pointer of const char.
-             // We can duplicate it, or rely on caller copying it implicitly?
-             // MDRConnection contract says "get last error".
-             // We should better copy it to a buffer in the struct.
+        if (self->delegate.lastError && self->delegate.lastError.length > 0) {
              return [self->delegate.lastError UTF8String];
         }
         return "";

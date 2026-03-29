@@ -14,18 +14,32 @@ inline int serviceUUIDtoBytes(const char* szSrc, uint8_t* dst)
 {
     if (strlen(szSrc) != 36)
         return -1;
-    unsigned int buf[16];
-    int ret = sscanf(szSrc,
-                 "%2x%2x%2x%2x-%2x%2x-%2x%2x-%2x%2x-%2x%2x%2x%2x%2x%2x",
-                 &buf[0], &buf[1], &buf[2], &buf[3],
-                 &buf[4], &buf[5], &buf[6], &buf[7],
-                 &buf[8], &buf[9], &buf[10], &buf[11],
-                 &buf[12], &buf[13], &buf[14], &buf[15]);
+    unsigned int u[5];
+    unsigned long long u6;
+    // Example: 956C7B26-D49A-4BA8-B03F-B17D393CB6E2
+    //          01234567 8 9ABC D E FGH I JKLMN OPQRSTUV
+    // Hyphens at 8, 13, 18, 23
+    int ret = sscanf(szSrc, "%8x-%4x-%4x-%4x-%12llx", &u[0], &u[1], &u[2], &u[3], &u6);
+    if (ret != 5) return -1;
 
-    if (ret != 16)
-        return -1;
-    for (int i = 0; i < 16; ++i)
-        dst[i] = static_cast<uint8_t>(buf[i]);
+    dst[0] = (u[0] >> 24) & 0xFF;
+    dst[1] = (u[0] >> 16) & 0xFF;
+    dst[2] = (u[0] >> 8) & 0xFF;
+    dst[3] = (u[0] >> 0) & 0xFF;
+
+    dst[4] = (u[1] >> 8) & 0xFF;
+    dst[5] = (u[1] >> 0) & 0xFF;
+
+    dst[6] = (u[2] >> 8) & 0xFF;
+    dst[7] = (u[2] >> 0) & 0xFF;
+
+    dst[8] = (u[3] >> 8) & 0xFF;
+    dst[9] = (u[3] >> 0) & 0xFF;
+
+    for (int i = 0; i < 6; i++) {
+        dst[15 - i] = (u6 >> (i * 8)) & 0xFF;
+    }
+
     return 0;
 }
 

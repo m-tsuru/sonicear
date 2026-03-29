@@ -519,65 +519,56 @@ namespace mdr
         }
 
         /* EQ */
-        if (mEqPresetId.dirty())
+        if (mEqPresetId.dirty() || mEqConfig.dirty() || mEqClearBass.dirty())
         {
             using namespace t1;
             EqEbbParamEq res;
             res.base.command = Command::EQEBB_SET_PARAM;
             res.base.type = EqEbbInquiredType::PRESET_EQ;
             res.presetId = mEqPresetId.desired;
-            SendCommandACK(EqEbbParamEq, res);
-            mEqPresetId.commit();
-            // Ask for a equalizer param update afterwards
-            SendCommandACK(EqEbbGetParam);
-        }
-        if (mEqConfig.dirty() || mEqClearBass.dirty())
-        {
-            using namespace t1;
-            EqEbbParamEq res;
-            res.base.command = Command::EQEBB_SET_PARAM;
-            res.base.type = EqEbbInquiredType::PRESET_EQ;
-            res.presetId = mEqPresetId.current;
-            int eqBands = mEqConfig.desired.size(), eqOffset = 0;
-            if (eqBands == 0)
+            
+            auto& bands = mEqConfig.desired;
+            int eqBands = bands.size();
+            
+            if (eqBands == 5)
             {
-                mEqConfig.commit(), mEqClearBass.commit();
+                res.bands.value = Vector<UInt8>{{
+                    static_cast<UInt8>(mEqClearBass.desired + 10),
+                    static_cast<UInt8>(bands[0] + 10),
+                    static_cast<UInt8>(bands[1] + 10),
+                    static_cast<UInt8>(bands[2] + 10),
+                    static_cast<UInt8>(bands[3] + 10),
+                    static_cast<UInt8>(bands[4] + 10),
+                }};
+            }
+            else if (eqBands == 10)
+            {
+                res.bands.value = Vector<UInt8>{{
+                    static_cast<UInt8>(bands[0] + 6),
+                    static_cast<UInt8>(bands[1] + 6),
+                    static_cast<UInt8>(bands[2] + 6),
+                    static_cast<UInt8>(bands[3] + 6),
+                    static_cast<UInt8>(bands[4] + 6),
+                    static_cast<UInt8>(bands[5] + 6),
+                    static_cast<UInt8>(bands[6] + 6),
+                    static_cast<UInt8>(bands[7] + 6),
+                    static_cast<UInt8>(bands[8] + 6),
+                    static_cast<UInt8>(bands[9] + 6),
+                }};
             }
             else
             {
-                auto& bands = mEqConfig.desired;
-                if (eqBands == 5)
-                {
-                    res.bands.value = Vector<UInt8>{{
-                        static_cast<UInt8>(mEqClearBass.desired + 10),
-                        static_cast<UInt8>(bands[0] + 10),
-                        static_cast<UInt8>(bands[1] + 10),
-                        static_cast<UInt8>(bands[2] + 10),
-                        static_cast<UInt8>(bands[3] + 10),
-                        static_cast<UInt8>(bands[4] + 10),
-                    }};
-                }
-                else if (eqBands == 10)
-                    res.bands.value = Vector<UInt8>{{
-                        static_cast<UInt8>(bands[0] + 6),
-                        static_cast<UInt8>(bands[1] + 6),
-                        static_cast<UInt8>(bands[2] + 6),
-                        static_cast<UInt8>(bands[3] + 6),
-                        static_cast<UInt8>(bands[4] + 6),
-                        static_cast<UInt8>(bands[5] + 6),
-                        static_cast<UInt8>(bands[6] + 6),
-                        static_cast<UInt8>(bands[7] + 6),
-                        static_cast<UInt8>(bands[8] + 6),
-                        static_cast<UInt8>(bands[9] + 6),
-                    }};
-                else
-                    MDR_CHECK_MSG(false, "mEqConfig size can only be 0, 5, or 10. Got {}.", eqBands);
-                mEqConfig.commit();
-                mEqClearBass.commit();
-                SendCommandACK(EqEbbParamEq, res);
-                // Ask for a equalizer param update afterwards
-                SendCommandACK(EqEbbGetParam);
+                // If no bands available, still try to set the preset
+                // Note: The device might require bands even for built-in presets
             }
+            
+            SendCommandACK(EqEbbParamEq, res);
+            mEqPresetId.commit();
+            mEqConfig.commit();
+            mEqClearBass.commit();
+            
+            // Ask for a equalizer param update afterwards to sync back any device-side adjustments
+            SendCommandACK(EqEbbGetParam);
         }
 
         /* Connection Quality */
