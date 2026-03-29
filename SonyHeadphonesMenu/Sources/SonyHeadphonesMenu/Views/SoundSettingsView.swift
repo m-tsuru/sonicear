@@ -71,7 +71,7 @@ struct SoundSettingsView: View {
                     .font(.caption)
                 Spacer()
                 Picker("", selection: $m.eqPreset) {
-                    ForEach(EqPreset.allCases) { preset in
+                    ForEach(manager.availableEqPresets) { preset in
                         Text(preset.label).tag(preset)
                     }
                 }
@@ -79,11 +79,28 @@ struct SoundSettingsView: View {
                 .frame(width: 140)
                 .onChange(of: manager.eqPreset) {
                     manager.recordUserActivity()
-                    manager.flushPendingChangesToDevice()
                 }
             }
 
-            if manager.eqPreset.showsEqBandsEditor {
+            if let error = manager.commandError {
+                HStack {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(.red)
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("OK") { manager.clearError() }
+                        .buttonStyle(.borderless)
+                        .font(.caption2)
+                }
+                .padding(8)
+                .background(.red.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            if !manager.eqBands.isEmpty {
                 eqBandsView
             }
         }

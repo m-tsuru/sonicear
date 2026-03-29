@@ -37,10 +37,20 @@ final class HeadphonesManager {
     // MARK: - EQ
 
     var eqPreset: EqPreset = .off
-    var eqBands: [Double] = Array(repeating: 0, count: 5)
+    var eqBands: [Double] = []
     var clearBass: Double = 0
+    
+    var availableEqPresets: [EqPreset] {
+        DevicePresets.availablePresets(for: modelName)
+    }
 
-    // MARK: - DSEE
+    // MARK: - Error Handling
+    
+    var commandError: String? = nil
+    
+    func clearError() {
+        commandError = nil
+    }
 
     var dseeEnabled = false
 
@@ -377,8 +387,10 @@ final class HeadphonesManager {
         case MDR_HEADPHONES_ERROR:
             let errPtr = mdrHeadphonesGetLastError(hp)!
             let error = String(decoding: UnsafeRawBufferPointer(start: errPtr, count: strlen(errPtr)), as: UTF8.self)
-            connectionState = .error(error)
-            disconnect()
+            commandError = error
+            // エラーの種類によっては切断せずにリトライ可能
+            // disconnect() // ここでの強制切断は行わず、UI 側で通知のみ行う
+            break
 
         default:
             if event > 0 {
