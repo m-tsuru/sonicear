@@ -380,6 +380,11 @@ namespace mdr
          * @return @ref MDR_HEADPHONES_TASK_COMMIT_OK on completion (returned in @ref PollEvents)
          */
         MDRTask RequestCommitV2();
+        /**
+         * @brief Queue EQEBB GET_PARAM (PRESET_EQ) so the device returns current preset / band steps.
+         * @note Non-blocking; sends on next @ref PollEvents. Pair with commit when changing preset.
+         */
+        void RequestEqParamGet();
 #pragma endregion
 
     private:

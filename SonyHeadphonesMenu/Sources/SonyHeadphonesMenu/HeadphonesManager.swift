@@ -234,6 +234,27 @@ final class HeadphonesManager {
     func setEqPreset(_ preset: EqPreset) {
         recordUserActivity()
         eqPreset = preset
+        flushPendingChangesToDevice()
+    }
+
+    /// `pushAllToDevice` と初回コミットをすぐ実行する（EQ など、ポーリング待ちだと遅れる場合用）。
+    func flushPendingChangesToDevice() {
+        guard let hp = headphones, phase == .running else { return }
+        pushAllToDevice(hp)
+        if mdrHeadphonesIsDirty(hp) == MDR_RESULT_INPROGRESS,
+           mdrHeadphonesRequestIsReady(hp) == MDR_RESULT_OK {
+            _ = mdrHeadphonesRequestCommitV2(hp)
+        }
+        // Custom / User: イヤホン側に保存されたバンドを読み直す（GET は dirty でなくても送る）
+        if eqPreset.needsStoredEqRefresh {
+            _ = mdrHeadphonesRequestEqParamGet(hp)
+        }
+    }
+
+    /// 現在の EQ プリセット／バンドをデバイスから再取得する（メニューから同じ User を選び直したときなど）。
+    func refreshEqFromDevice() {
+        guard let hp = headphones, phase == .running else { return }
+        _ = mdrHeadphonesRequestEqParamGet(hp)
     }
 
     func togglePlayPause() {
@@ -463,8 +484,12 @@ final class HeadphonesManager {
         var value: Int32 = 0
 
         mdrHeadphonesGetEqPreset(hp, &value)
-        if let preset = EqPreset(rawValue: Int(value)) {
+        let raw = Int(value)
+        if let preset = EqPreset(rawValue: raw) {
             eqPreset = preset
+        } else if (0xB0 ... 0xBF).contains(raw) {
+            // ARTIST_COLLAB* — バンド編集は Custom 相当として扱う
+            eqPreset = .custom
         }
 
         mdrHeadphonesGetClearBass(hp, &value)
@@ -533,66 +558,90 @@ final class HeadphonesManager {
 
     private func pushAllToDevice(_ hp: OpaquePointer) {
         var val: Int32 = 0
+
+        // NC/ASM
+        mdrHeadphonesGetNcAsmEnabled(hp, &val)
+        if (ncAsmEnabled ? 1 : 0) != val {
+            mdrHeadphonesSetNcAsmEnabled(hp, ncAsmEnabled ? 1 : 0)
+        }
         
-        // Volume check
-        mdrHeadphonesGetVolume(hp, &val)
-        if val != Int32(volume) { recordUserActivity() }
-        
-        // EQ Preset check
-        mdrHeadphonesGetEqPreset(hp, &val)
-        if val != Int32(eqPreset.rawValue) { recordUserActivity() }
-        
-        // EQ Bands check
-        var count: Int32 = 0
-        mdrHeadphonesGetEqBands(hp, nil, &count)
-        if count > 0 {
-            var currentBands = [Int32](repeating: 0, count: Int(count))
-            mdrHeadphonesGetEqBands(hp, &currentBands, &count)
-            let newBands = eqBands.map { Int32($0) }
-            if currentBands != newBands { recordUserActivity() }
+        mdrHeadphonesGetNcAsmMode(hp, &val)
+        if Int32(ncAsmMode.rawValue) != val {
+            mdrHeadphonesSetNcAsmMode(hp, Int32(ncAsmMode.rawValue))
         }
 
-        // NC/ASM check
-        mdrHeadphonesGetNcAsmEnabled(hp, &val)
-        if val != (ncAsmEnabled ? 1 : 0) { recordUserActivity() }
-        mdrHeadphonesGetNcAsmMode(hp, &val)
-        if val != Int32(ncAsmMode.rawValue) { recordUserActivity() }
-        mdrHeadphonesGetAmbientLevel(hp, &val)
-        if val != Int32(ambientSoundLevel) { recordUserActivity() }
-        mdrHeadphonesGetFocusOnVoice(hp, &val)
-        if val != (focusOnVoice ? 1 : 0) { recordUserActivity() }
+        if ncAsmEnabled && ncAsmMode == .ambientSound {
+            mdrHeadphonesGetAmbientLevel(hp, &val)
+            if Int32(ambientSoundLevel) != val {
+                mdrHeadphonesSetAmbientLevel(hp, Int32(ambientSoundLevel))
+            }
+            
+            mdrHeadphonesGetFocusOnVoice(hp, &val)
+            if (focusOnVoice ? 1 : 0) != val {
+                mdrHeadphonesSetFocusOnVoice(hp, focusOnVoice ? 1 : 0)
+            }
+        }
 
-        // DSEE/Priority/S2C check
+        // EQ
+        mdrHeadphonesGetEqPreset(hp, &val)
+        let swiftPreset = Int32(eqPreset.rawValue)
+        if swiftPreset != val {
+            mdrHeadphonesSetEqPreset(hp, swiftPreset)
+            // プリセット変更時、非カスタムなら一度だけ空バンドを送ってデバイス側のプリセット値を使わせる
+            if swiftPreset < 0xA0 {
+                mdrHeadphonesSetEqBands(hp, [], 0)
+            }
+        }
+        
+        if eqPreset == .custom || eqPreset.rawValue >= 0xA1 {
+            mdrHeadphonesGetClearBass(hp, &val)
+            if Int32(clearBass) != val {
+                mdrHeadphonesSetClearBass(hp, Int32(clearBass))
+            }
+
+            var count: Int32 = 0
+            mdrHeadphonesGetEqBands(hp, nil, &count)
+            if count > 0 {
+                var currentBands = [Int32](repeating: 0, count: Int(count))
+                mdrHeadphonesGetEqBands(hp, &currentBands, &count)
+                let swiftBands = eqBands.map { Int32($0) }
+                if currentBands != swiftBands {
+                    mdrHeadphonesSetEqBands(hp, swiftBands, Int32(swiftBands.count))
+                }
+            }
+        }
+
+        // DSEE / Volume / Priority
         mdrHeadphonesGetUpscalingEnabled(hp, &val)
-        if val != (dseeEnabled ? 1 : 0) { recordUserActivity() }
+        if (dseeEnabled ? 1 : 0) != val {
+            mdrHeadphonesSetUpscalingEnabled(hp, dseeEnabled ? 1 : 0)
+        }
+
+        mdrHeadphonesGetVolume(hp, &val)
+        if Int32(volume) != val {
+            mdrHeadphonesSetVolume(hp, Int32(volume))
+        }
+
         mdrHeadphonesGetAudioPriority(hp, &val)
-        if val != Int32(audioPriority.rawValue) { recordUserActivity() }
+        if Int32(audioPriority.rawValue) != val {
+            mdrHeadphonesSetAudioPriority(hp, Int32(audioPriority.rawValue))
+        }
+
         mdrHeadphonesGetSpeakToChatEnabled(hp, &val)
-        if val != (speakToChatEnabled ? 1 : 0) { recordUserActivity() }
+        if (speakToChatEnabled ? 1 : 0) != val {
+            mdrHeadphonesSetSpeakToChatEnabled(hp, speakToChatEnabled ? 1 : 0)
+        }
 
-        // General settings check
+        // General
         mdrHeadphonesGetMultipointEnabled(hp, &val)
-        if val != (multipointEnabled ? 1 : 0) { recordUserActivity() }
+        if (multipointEnabled ? 1 : 0) != val {
+            mdrHeadphonesSetMultipointEnabled(hp, multipointEnabled ? 1 : 0)
+        }
+
         mdrHeadphonesGetAutoPauseEnabled(hp, &val)
-        if val != (autoPauseEnabled ? 1 : 0) { recordUserActivity() }
-
-        mdrHeadphonesSetNcAsmEnabled(hp, ncAsmEnabled ? 1 : 0)
-        mdrHeadphonesSetNcAsmMode(hp, Int32(ncAsmMode.rawValue))
-        mdrHeadphonesSetAmbientLevel(hp, Int32(ambientSoundLevel))
-        mdrHeadphonesSetFocusOnVoice(hp, focusOnVoice ? 1 : 0)
-
-        mdrHeadphonesSetEqPreset(hp, Int32(eqPreset.rawValue))
-        mdrHeadphonesSetClearBass(hp, Int32(clearBass))
-        let bands = eqBands.map { Int32($0) }
-        mdrHeadphonesSetEqBands(hp, bands, Int32(bands.count))
-
-        mdrHeadphonesSetUpscalingEnabled(hp, dseeEnabled ? 1 : 0)
-        mdrHeadphonesSetVolume(hp, Int32(volume))
-        mdrHeadphonesSetAudioPriority(hp, Int32(audioPriority.rawValue))
-        mdrHeadphonesSetSpeakToChatEnabled(hp, speakToChatEnabled ? 1 : 0)
-
-        mdrHeadphonesSetMultipointEnabled(hp, multipointEnabled ? 1 : 0)
-        mdrHeadphonesSetAutoPauseEnabled(hp, autoPauseEnabled ? 1 : 0)
+        if (autoPauseEnabled ? 1 : 0) != val {
+            mdrHeadphonesSetAutoPauseEnabled(hp, autoPauseEnabled ? 1 : 0)
+        }
     }
 
     // MARK: - Helpers

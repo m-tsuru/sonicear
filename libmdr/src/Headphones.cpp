@@ -217,6 +217,13 @@ namespace mdr
     {
         Awake(AWAIT_ACK);
     }
+
+    void MDRHeadphones::RequestEqParamGet()
+    {
+        using namespace v2::t1;
+        // Do not use SendCommandACK here — it contains co_await and only works inside MDRTask coroutines.
+        SendCommandImpl(EqEbbGetParam{});
+    }
 }
 
 #pragma region C Exports
@@ -351,6 +358,13 @@ int mdrHeadphonesIsDirty(MDRHeadphones* p)
     {
         return MDR_RESULT_INPROGRESS;
     }
+    return MDR_RESULT_OK;
+}
+
+int mdrHeadphonesRequestEqParamGet(MDRHeadphones* p)
+{
+    auto h = reinterpret_cast<mdr::MDRHeadphones*>(p);
+    h->RequestEqParamGet();
     return MDR_RESULT_OK;
 }
 

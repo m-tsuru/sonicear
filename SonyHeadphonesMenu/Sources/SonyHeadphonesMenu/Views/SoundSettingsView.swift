@@ -12,18 +12,20 @@ struct SoundSettingsView: View {
 
             eqSection
 
-            HStack {
-                Text("Clear Bass")
-                    .font(.caption)
-                Spacer()
-                Slider(value: $m.clearBass, in: -10...10, step: 1)
-                    .frame(width: 140)
-                    .onChange(of: manager.clearBass) {
-                        manager.recordUserActivity()
-                    }
-                Text(String(format: "%+.0f", manager.clearBass))
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 28, alignment: .trailing)
+            if manager.eqBands.count == 5 {
+                HStack {
+                    Text("Clear Bass")
+                        .font(.caption)
+                    Spacer()
+                    Slider(value: $m.clearBass, in: -10...10, step: 1)
+                        .frame(width: 140)
+                        .onChange(of: manager.clearBass) {
+                            manager.recordUserActivity()
+                        }
+                    Text(String(format: "%+.0f", manager.clearBass))
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 28, alignment: .trailing)
+                }
             }
 
             Divider()
@@ -77,19 +79,24 @@ struct SoundSettingsView: View {
                 .frame(width: 140)
                 .onChange(of: manager.eqPreset) {
                     manager.recordUserActivity()
+                    manager.flushPendingChangesToDevice()
                 }
             }
 
-            if manager.eqPreset == .custom {
+            if manager.eqPreset.showsEqBandsEditor {
                 eqBandsView
             }
         }
     }
 
     private var eqBandsView: some View {
-        let labels = ["400", "1k", "2.5k", "6.3k", "16k"]
-        return HStack(alignment: .bottom, spacing: 4) {
-            ForEach(0..<5, id: \.self) { i in
+        let kBand5 = ["400", "1k", "2.5k", "6.3k", "16k"]
+        let kBand10 = ["31", "63", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]
+        let count = manager.eqBands.count
+        let labels = count == 10 ? kBand10 : kBand5
+        
+        return HStack(alignment: .bottom, spacing: count == 10 ? 2 : 4) {
+            ForEach(0..<count, id: \.self) { i in
                 eqBand(index: i, label: labels[i])
             }
         }
@@ -100,10 +107,14 @@ struct SoundSettingsView: View {
 
     private func eqBand(index: Int, label: String) -> some View {
         @Bindable var m = manager
+        let isEditable = manager.eqPreset == .custom || manager.eqPreset.rawValue >= 0xA1
+        let range: Double = manager.eqBands.count == 10 ? 6 : 10
+        let count = manager.eqBands.count
+
         return VStack(spacing: 4) {
             GeometryReader { geo in
                 let height = geo.size.height
-                let normalizedValue = (manager.eqBands[index] + 10) / 20
+                let normalizedValue = (manager.eqBands[index] + range) / (range * 2)
                 let barHeight = max(6, height * normalizedValue)
 
                 ZStack(alignment: .bottom) {
@@ -114,7 +125,7 @@ struct SoundSettingsView: View {
 
                     // Active Bar
                     Capsule()
-                        .fill(.tint.opacity(0.8))
+                        .fill((isEditable ? Color.accentColor : Color.secondary).opacity(0.8))
                         .frame(width: 6, height: barHeight)
                         .glassEffect(in: .capsule)
                 }
@@ -123,17 +134,18 @@ struct SoundSettingsView: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
+                            guard isEditable else { return }
                             manager.recordUserActivity()
                             let y = value.location.y
                             let ratio = 1.0 - (y / height)
-                            let newValue = min(10, max(-10, ratio * 20 - 10))
+                            let newValue = min(range, max(-range, ratio * (range * 2) - range))
                             m.eqBands[index] = newValue
                         }
                 )
             }
 
             Text(label)
-                .font(.system(size: 8, weight: .medium))
+                .font(.system(size: count == 10 ? 7 : 8, weight: .medium))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)

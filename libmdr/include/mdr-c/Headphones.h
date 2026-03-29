@@ -62,6 +62,12 @@ int mdrHeadphonesRequestCommitV2(MDRHeadphones*);
  */
 int mdrHeadphonesIsDirty(MDRHeadphones*);
 /**
+ * @brief Queue EQEBB GET_PARAM (preset EQ) to read current preset and band steps from the device.
+ * @note Non-blocking; processed on the next @ref mdrHeadphonesPollEvents. Use after selecting
+ *       Custom / User settings to refresh values stored on the headphones.
+ */
+int mdrHeadphonesRequestEqParamGet(MDRHeadphones*);
+/**
  * TODO:
  *  Figure out how we can expose the bajillion of Headphone @ref MDRProperty to the C interface.
  *  And basically this _sucks_. Almost all of the properties has their own bespoke structs.

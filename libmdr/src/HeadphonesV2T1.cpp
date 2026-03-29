@@ -667,13 +667,14 @@ namespace mdr
             case 0:
                 return MDR_HEADPHONES_EVT_EQUALIZER_PARAM;
             case 6:
+                // Serialized as [Clear bass +10, 400Hz, 1k, 2.5k, 6.3k, 16k] (see RequestCommitV2 EqEbbParamEq)
                 self->mEqClearBass.overwrite(res.bands.value[0] - 10);
                 self->mEqConfig.overwrite({
-                    res.bands.value[1] - 10, // 400
-                    res.bands.value[2] - 10, // 1k
-                    res.bands.value[3] - 10, // 2.5k
-                    res.bands.value[4] - 10, // 6.3k
-                    res.bands.value[5] - 10, // 16k
+                    res.bands.value[1] - 10,
+                    res.bands.value[2] - 10,
+                    res.bands.value[3] - 10,
+                    res.bands.value[4] - 10,
+                    res.bands.value[5] - 10,
                 });
                 return MDR_HEADPHONES_EVT_EQUALIZER_PARAM;
             case 10:
